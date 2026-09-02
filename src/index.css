@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=Noto+Serif+TC:wght@400;500;600;700&display=swap');
+
+@layer base {
+  :root {
+    /* HKU Dark Green palette */
+    --background: 60 20% 98%;
+    --foreground: 150 30% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: 150 30% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 150 30% 8%;
+
+    /* HKU dark green ~ #006548 */
+    --primary: 162 100% 20%;
+    --primary-foreground: 60 30% 97%;
+
+    --secondary: 60 15% 94%;
+    --secondary-foreground: 150 30% 12%;
+    --muted: 60 15% 95%;
+    --muted-foreground: 150 8% 40%;
+    --accent: 45 75% 52%;
+    --accent-foreground: 150 30% 10%;
+    --destructive: 0 75% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 150 10% 88%;
+    --input: 150 10% 90%;
+    --ring: 162 100% 20%;
+    --chart-1: 162 100% 20%;
+    --chart-2: 45 75% 52%;
+    --chart-3: 200 70% 45%;
+    --chart-4: 25 80% 55%;
+    --chart-5: 280 50% 50%;
+    --radius: 0.75rem;
+
+    --font-serif: 'Cormorant Garamond', 'Noto Serif TC', serif;
+    --font-sans: 'Inter', 'Noto Serif TC', sans-serif;
+    --font-tc: 'Noto Serif TC', serif;
+  }
+
+  .dark {
+    --background: 150 30% 6%;
+    --foreground: 60 20% 95%;
+    --card: 150 25% 9%;
+    --card-foreground: 60 20% 95%;
+    --popover: 150 25% 9%;
+    --popover-foreground: 60 20% 95%;
+    --primary: 162 60% 55%;
+    --primary-foreground: 150 30% 6%;
+    --secondary: 150 15% 14%;
+    --secondary-foreground: 60 20% 95%;
+    --muted: 150 15% 14%;
+    --muted-foreground: 150 8% 65%;
+    --accent: 45 75% 55%;
+    --accent-foreground: 150 30% 8%;
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 150 15% 18%;
+    --input: 150 15% 18%;
+    --ring: 162 60% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "ss01", "cv11";
+  }
+}
+
+@layer utilities {
+  .font-serif { font-family: var(--font-serif); }
+  .font-sans { font-family: var(--font-sans); }
+  .font-tc { font-family: var(--font-tc); }
+
+  .text-balance { text-wrap: balance; }
+  .text-pretty { text-wrap: pretty; }
+
+  .grain {
+    background-image:
+      radial-gradient(circle at 25% 25%, hsl(var(--primary) / 0.04) 0%, transparent 40%),
+      radial-gradient(circle at 75% 75%, hsl(var(--accent) / 0.05) 0%, transparent 40%);
+  }
+}

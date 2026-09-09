@@ -11,7 +11,7 @@ import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Chat from '@/pages/Chat';
 import Admin from '@/pages/Admin';
-import Info from '@/pages/Info';
+// import Info from '@/pages/Info';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
@@ -36,7 +36,7 @@ const AuthenticatedApp = () => {
       <Route element={<Layout />}>
         <Route path="/" element={<Home />} />
         <Route path="/chat" element={<Chat />} />
-        <Route path="/info" element={<Info />} />
+        {/* <Route path="/info" element={<Info />} /> */}
         <Route path="/admin" element={<Admin />} />
       </Route>
       <Route path="*" element={<PageNotFound />} />

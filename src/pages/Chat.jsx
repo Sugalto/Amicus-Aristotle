@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '@/api/apiClient';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Send, RotateCcw, ArrowLeft } from 'lucide-react';
+import { Send, RotateCcw, ArrowLeft, Volume2 } from 'lucide-react';
 import { useLanguage } from '@/lib/LanguageContext';
 import { useT } from '@/lib/i18n';
 import MessageBubble from '@/components/chat/MessageBubble';
@@ -154,6 +154,47 @@ export default function Chat() {
     }
   };
 
+  const speakText = (text) => {
+      if (!('speechSynthesis' in window)) {
+        alert('Your browser does not support text-to-speech.');
+        return;
+      }
+
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
+
+      if (lang === 'zh-TW' || lang === 'bilingual') {
+        utterance.lang = 'zh-TW';
+
+        const chineseVoice =
+          voices.find(v => v.name === 'Microsoft HanHan Online - Chinese (Taiwan)') ||
+          voices.find(v => v.lang === 'zh-TW') ||
+          voices.find(v => v.lang === 'zh-HK') ||
+          voices.find(v => v.lang === 'zh-CN');
+
+        if (chineseVoice) {
+          utterance.voice = chineseVoice;
+        }
+      } else {
+        utterance.lang = 'en-US';
+
+        const englishVoice =
+          voices.find(v => v.name.includes('Aria')) ||
+          voices.find(v => v.lang === 'en-US');
+
+        if (englishVoice) {
+          utterance.voice = englishVoice;
+        }
+      }
+
+      utterance.rate = 1;
+      utterance.pitch = 1;
+
+      window.speechSynthesis.speak(utterance);
+    };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -227,8 +268,25 @@ export default function Chat() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-5">
           {messages.map((m, i) => (
-            <MessageBubble key={i} message={m} index={i} />
-          ))}
+              <div key={i}>
+                <MessageBubble message={m} index={i} />
+
+                {m.role === 'assistant' && (
+                  <div className="mt-1 ml-12">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => speakText(m.content)}
+                      className="h-7 px-2 text-muted-foreground"
+                      title="Read aloud"
+                    >
+                      <Volume2 className="w-3.5 h-3.5 mr-1" />
+                      {lang === 'zh-TW' ? '朗讀' : 'Read aloud'}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
           {isThinking && <ThinkingIndicator />}
         </div>
       </div>

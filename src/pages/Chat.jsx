@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '@/api/apiClient';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Send, RotateCcw, ArrowLeft, Volume2 } from 'lucide-react';
+import { Send, RotateCcw, ArrowLeft, Volume2, Mic, Square } from 'lucide-react';
 import { useLanguage } from '@/lib/LanguageContext';
 import { useT } from '@/lib/i18n';
 import MessageBubble from '@/components/chat/MessageBubble';
@@ -31,9 +31,16 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [conversationDocId, setConversationDocId] = useState(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const sourceRef = useRef(null);
+  const processorRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   const [serviceStatus, setServiceStatus] = useState('online');
   const isOffline = serviceStatus === 'offline_retry' || serviceStatus === 'offline_issues';
@@ -195,6 +202,256 @@ export default function Chat() {
       window.speechSynthesis.speak(utterance);
     };
 
+    const downsampleTo16k = (samples, inputSampleRate) => {
+        if (inputSampleRate === 16000) {
+          return samples;
+        }
+
+        const ratio = inputSampleRate / 16000;
+        const newLength = Math.round(samples.length / ratio);
+        const result = new Float32Array(newLength);
+
+        let offsetResult = 0;
+        let offsetBuffer = 0;
+
+        while (offsetResult < result.length) {
+          const nextOffsetBuffer = Math.round(
+            (offsetResult + 1) * ratio
+          );
+
+          let sum = 0;
+          let count = 0;
+
+          for (
+            let i = offsetBuffer;
+            i < nextOffsetBuffer && i < samples.length;
+            i++
+          ) {
+            sum += samples[i];
+            count++;
+          }
+
+          result[offsetResult] = count > 0 ? sum / count : 0;
+
+          offsetResult++;
+          offsetBuffer = nextOffsetBuffer;
+        }
+
+        return result;
+      };
+
+
+    const floatTo16BitPCM = (samples) => {
+        const buffer = new ArrayBuffer(samples.length * 2);
+        const view = new DataView(buffer);
+
+        for (let i = 0; i < samples.length; i++) {
+          const sample = Math.max(-1, Math.min(1, samples[i]));
+
+          view.setInt16(
+            i * 2,
+            sample < 0
+              ? sample * 0x8000
+              : sample * 0x7fff,
+            true
+          );
+        }
+
+        return new Uint8Array(buffer);
+      };
+
+
+    const uint8ToBase64 = (bytes) => {
+        let binary = '';
+
+        const chunkSize = 0x8000;
+
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          const chunk = bytes.subarray(
+            i,
+            Math.min(i + chunkSize, bytes.length)
+          );
+
+          binary += String.fromCharCode(...chunk);
+        }
+
+        return btoa(binary);
+      };
+
+
+    const startRecording = async () => {
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) {
+            alert('Your browser does not support microphone recording.');
+            return;
+          }
+
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              echoCancellation: true,
+              noiseSuppression: true,
+            },
+          });
+
+          const AudioContextClass =
+            window.AudioContext || window.webkitAudioContext;
+
+          const audioContext = new AudioContextClass();
+
+          const source =
+            audioContext.createMediaStreamSource(stream);
+
+          const processor =
+            audioContext.createScriptProcessor(4096, 1, 1);
+
+          audioChunksRef.current = [];
+
+          processor.onaudioprocess = (event) => {
+            const channel =
+              event.inputBuffer.getChannelData(0);
+
+            audioChunksRef.current.push(
+              new Float32Array(channel)
+            );
+          };
+
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+
+          mediaStreamRef.current = stream;
+          audioContextRef.current = audioContext;
+          sourceRef.current = source;
+          processorRef.current = processor;
+
+          setIsRecording(true);
+
+        } catch (error) {
+          console.error('Microphone error:', error);
+
+          alert(
+            lang === 'zh-TW'
+              ? '無法使用麥克風，請檢查瀏覽器權限。'
+              : 'Unable to access the microphone. Please check browser permissions.'
+          );
+        }
+      };
+
+
+    const stopRecording = async () => {
+        if (!isRecording) return;
+
+        setIsRecording(false);
+        setIsTranscribing(true);
+
+        const audioContext = audioContextRef.current;
+        const inputSampleRate =
+          audioContext?.sampleRate || 48000;
+
+        try {
+          processorRef.current?.disconnect();
+          sourceRef.current?.disconnect();
+
+          mediaStreamRef.current
+            ?.getTracks()
+            .forEach(track => track.stop());
+
+          if (audioContext) {
+            await audioContext.close();
+          }
+
+          const chunks = audioChunksRef.current;
+
+          const totalLength = chunks.reduce(
+            (sum, chunk) => sum + chunk.length,
+            0
+          );
+
+          if (totalLength === 0) {
+            throw new Error('No audio was recorded');
+          }
+
+          const merged = new Float32Array(totalLength);
+ 
+          let offset = 0;
+
+          for (const chunk of chunks) {
+            merged.set(chunk, offset);
+            offset += chunk.length;
+          }
+
+          const samples16k =
+            downsampleTo16k(
+              merged,
+              inputSampleRate
+            );
+
+          const pcm =
+            floatTo16BitPCM(samples16k);
+
+          const audioBase64 =
+            uint8ToBase64(pcm);
+
+          console.log(
+            `Recorded PCM: ${pcm.length} bytes`
+          );
+
+          const response =
+            await api.functions.invoke(
+              'transcribe',
+              {
+                audioBase64,
+              }
+            );
+
+          const transcript =
+            response?.data?.transcript?.trim();
+
+          if (!transcript) {
+            throw new Error(
+              'No speech was recognized'
+            );
+          }
+
+          setInput(transcript);
+
+          setTimeout(() => {
+            textareaRef.current?.focus();
+          }, 0);
+
+        } catch (error) {
+          console.error(
+            'Speech recognition error:',
+            error
+          );
+
+          alert(
+            lang === 'zh-TW'
+              ? '語音識別失敗，請再試一次。'
+              : 'Speech recognition failed. Please try again.'
+          );
+
+        } finally {
+          audioChunksRef.current = [];
+
+          processorRef.current = null;
+          sourceRef.current = null;
+          mediaStreamRef.current = null;
+          audioContextRef.current = null;
+
+          setIsTranscribing(false);
+        }
+      };
+
+
+    const handleMicrophone = () => {
+        if (isRecording) {
+          stopRecording();
+        } else {
+          startRecording();
+        }
+      };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -305,6 +562,24 @@ export default function Chat() {
               disabled={isThinking || isOffline}
               className={`flex-1 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 min-h-[40px] max-h-40 px-3 py-2 ${tcCls}`}
             />
+             <Button
+              onClick={handleMicrophone}
+              disabled={isThinking || isOffline || isTranscribing}
+              size="icon"
+              variant={isRecording ? 'destructive' : 'outline'}
+              className="rounded-xl h-10 w-10 flex-shrink-0"
+              title={
+                isRecording
+                  ? 'Stop recording'
+                  : 'Voice input'
+              }
+            >
+              {isRecording ? (
+                <Square className="w-4 h-4" />
+              ) : (
+                <Mic className="w-4 h-4" />
+              )}
+            </Button>
             <Button
               onClick={handleSend}
               disabled={!input.trim() || isThinking || isOffline}

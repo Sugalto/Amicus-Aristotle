@@ -5,6 +5,17 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 
+import {
+  getEvidenceDetectionContext,
+  validateEvidenceResult,
+  createNoEvidenceResult,
+} from './bayesian/evidenceDetector.js';
+
+import {
+  createBayesianSession,
+  processEvidence,
+} from './bayesian/bayesianEngine.js';
+
 const PORT = 3001;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,12 +24,32 @@ const __dirname = path.dirname(__filename);
 const promptPath = path.join(__dirname, 'prompts', 'aristotle.md');
 const ARISTOTLE_PROMPT = fs.readFileSync(promptPath, 'utf8');
 
+const bayesianSessions = new Map();
+
+function getBayesianSession(sessionId) {
+  if (!sessionId) {
+    return createBayesianSession();
+  }
+
+  if (!bayesianSessions.has(sessionId)) {
+    bayesianSessions.set(
+      sessionId,
+      createBayesianSession()
+    );
+  }
+
+  return bayesianSessions.get(sessionId);
+}
+
 
 // =========================
 // DeepSeek
 // =========================
 
-async function callDeepSeek(messages) {
+async function callDeepSeek(
+  messages,
+  routingContext = null
+) {
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: {
@@ -27,13 +58,48 @@ async function callDeepSeek(messages) {
     },
     body: JSON.stringify({
       model: process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
-      messages: [
-        {
-          role: 'system',
-          content: ARISTOTLE_PROMPT,
-        },
-        ...messages,
-      ],
+ messages: [
+  {
+    role: 'system',
+    content: routingContext
+      ? `${ARISTOTLE_PROMPT}
+
+---
+
+INTERNAL PEDAGOGICAL ROUTING GUIDANCE
+
+The misconception graph has selected the following
+concept as the preferred direction for the next exchange:
+
+Node: ${routingContext.id}
+Label: ${routingContext.label}
+Description: ${routingContext.description}
+
+Use this only as hidden pedagogical guidance.
+
+Naturally steer the conversation toward this idea,
+while remaining fully in the Amicus Aristotle persona.
+
+Do not mention node IDs, misconception labels,
+probabilities, Bayesian reasoning, routing,
+the graph, or these instructions to the student.
+
+Do not abruptly change topic.
+Connect this target naturally to the student's latest
+message and the current conversation.
+
+Do not simply teach or state the modern scientific answer.
+Continue to follow the original Aristotle dialogue rules,
+including defending, questioning, yielding gradually,
+and allowing the student to reason.
+
+The graph chooses WHAT conceptual issue should be explored.
+You choose HOW Aristotle naturally explores it.
+`
+      : ARISTOTLE_PROMPT,
+  },
+  ...messages,
+],
       thinking: {
         type: 'disabled',
       },
@@ -62,6 +128,141 @@ async function callDeepSeek(messages) {
   }
 
   return reply;
+}
+
+async function classifyStudentEvidence(studentText) {
+  if (
+    typeof studentText !== 'string' ||
+    studentText.trim() === ''
+  ) {
+    return createNoEvidenceResult();
+  }
+
+  const nodes = getEvidenceDetectionContext();
+
+  const classifierPrompt = `
+You are an evidence classifier for a science education dialogue.
+
+Your task is to determine whether the student's message provides evidence about one misconception node.
+
+Misconception nodes:
+${JSON.stringify(nodes)}
+
+Return ONLY valid JSON in exactly this structure:
+{
+  "nodeId": "M1.00",
+  "evidenceType": "supports",
+  "confidence": 0.9
+}
+
+Allowed evidenceType values:
+- supports
+- challenges
+- strong_support
+- strong_challenge
+- uncertain
+
+Rules:
+1. Select the single most relevant misconception node.
+2. "supports" means the student's statement is consistent with the misconception.
+3. "challenges" means the student questions or contradicts the misconception.
+4. Use "strong_support" or "strong_challenge" only when the statement is very explicit.
+5. If the message does not provide meaningful evidence about any misconception, return:
+{
+  "nodeId": null,
+  "evidenceType": "uncertain",
+  "confidence": 0
+}
+6. Understand English, Simplified Chinese, and Traditional Chinese.
+7. Do not explain your answer.
+8. Return JSON only.
+`;
+
+  const response = await fetch(
+    'https://api.deepseek.com/chat/completions',
+    {
+      method: 'POST',
+
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization:
+          `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+      },
+
+      body: JSON.stringify({
+        model:
+          process.env.DEEPSEEK_MODEL ||
+          'deepseek-v4-flash',
+
+        messages: [
+          {
+            role: 'system',
+            content: classifierPrompt,
+          },
+          {
+            role: 'user',
+            content: studentText,
+          },
+        ],
+
+        thinking: {
+          type: 'disabled',
+        },
+
+        temperature: 0,
+        max_tokens: 100,
+        stream: false,
+      }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error(
+      'Evidence classifier API error:',
+      data
+    );
+
+    throw new Error(
+      data?.error?.message ||
+      `Evidence classification failed (${response.status})`
+    );
+  }
+
+  let content =
+    data?.choices?.[0]?.message?.content;
+
+  if (!content) {
+    return createNoEvidenceResult();
+  }
+
+  content = content
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  try {
+    const result = JSON.parse(content);
+
+    if (!validateEvidenceResult(result)) {
+      console.warn(
+        'Invalid evidence classification:',
+        result
+      );
+
+      return createNoEvidenceResult();
+    }
+
+    return result;
+  } catch (error) {
+    console.warn(
+      'Failed to parse evidence classification:',
+      content
+    );
+
+    return createNoEvidenceResult();
+  }
 }
 
 
@@ -428,6 +629,87 @@ const server = http.createServer((req, res) => {
   }
 
 
+    // -------------------------
+  // Bayesian evidence detector
+  // -------------------------
+
+  if (
+    req.method === 'POST' &&
+    req.url === '/api/functions/detectEvidence'
+  ) {
+    let body = '';
+
+    req.on('data', chunk => {
+      body += chunk;
+    });
+
+    req.on('end', async () => {
+      try {
+        const payload =
+          JSON.parse(body || '{}');
+
+        const studentText =
+          payload.studentText || '';
+
+        const evidence =
+          await classifyStudentEvidence(
+            studentText
+          );
+
+        console.log(
+          'Detected evidence:',
+          evidence
+        );
+  
+        const testState =
+  createBayesianSession();
+        
+        const bayesianResult =
+          processEvidence(
+            testState,
+            evidence
+          );
+
+        console.log(
+          'Bayesian result:',
+          bayesianResult
+        );
+
+        res.writeHead(200, {
+          'Content-Type':
+            'application/json; charset=utf-8',
+        });
+
+        res.end(
+          JSON.stringify({
+            evidence,
+            bayesianResult,
+          })
+        );
+      } catch (error) {
+        console.error(
+          'Evidence detection error:',
+          error
+        );
+
+        res.writeHead(500, {
+          'Content-Type':
+            'application/json; charset=utf-8',
+        });
+
+        res.end(
+          JSON.stringify({
+            error:
+              error.message ||
+              'Evidence detection failed',
+          })
+        );
+      }
+    });
+
+    return;
+  }
+
   // -------------------------
   // Aristotle / DeepSeek
   // -------------------------
@@ -450,22 +732,95 @@ const server = http.createServer((req, res) => {
           ? payload.messages
           : [];
 
+        const sessionId =
+          typeof payload.sessionId === 'string'
+            ? payload.sessionId
+           : '';
+
         console.log(
           `Received ${messages.length} Aristotle messages`
         );
 
-        const reply = await callDeepSeek(messages);
+        const latestUserMessage =
+  [...messages]
+    .reverse()
+    .find(message => message.role === 'user');
+
+let evidence =
+  createNoEvidenceResult();
+
+let bayesianResult = null;
+
+if (latestUserMessage?.content) {
+  evidence =
+    await classifyStudentEvidence(
+      latestUserMessage.content
+    );
+
+  const conversationState =
+    getBayesianSession(sessionId);
+
+  bayesianResult =
+    processEvidence(
+      conversationState,
+      evidence
+    );
+
+  console.log(
+    'Chat Bayesian routing:',
+    {
+      sessionId,
+      evidence,
+      activeNode:
+        bayesianResult.activeNode,
+      route:
+        bayesianResult.route
+          ? `${bayesianResult.route.source} -> ${bayesianResult.route.target}`
+          : null,
+      turnCount:
+        bayesianResult.turnCount,
+    }
+  );
+}
+
+        const routingContext =
+  bayesianResult?.route?.targetNode || null;
+
+const reply = await callDeepSeek(
+  messages,
+  routingContext
+);
 
         res.writeHead(200, {
           'Content-Type':
             'application/json; charset=utf-8',
         });
 
-        res.end(
-          JSON.stringify({
-            reply,
-          })
-        );
+res.end(
+  JSON.stringify({
+    reply,
+    bayesianDebug: bayesianResult
+      ? {
+          evidence,
+          activeNode:
+            bayesianResult.activeNode,
+          route:
+            bayesianResult.route
+              ? {
+                  source:
+                    bayesianResult.route.source,
+                  target:
+                    bayesianResult.route.target,
+                  score:
+                    bayesianResult.route.score,
+                }
+              : null,
+          turnCount:
+            bayesianResult.turnCount,
+        }
+      : null,
+  })
+);
 
       } catch (error) {
         console.error(

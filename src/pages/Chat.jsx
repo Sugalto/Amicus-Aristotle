@@ -136,6 +136,7 @@ export default function Chat() {
       const response = await api.functions.invoke('aristotleChat', {
         messages: newMessages.map(({ role, content }) => ({ role, content })),
         language: lang,
+        sessionId,
       });
 
       const reply = response?.data?.reply || (lang === 'zh-TW' ? '...請容我再想一想。' : lang === 'bilingual' ? '...Let me think on that further.\n\n---\n\n...請容我再想一想。' : '...Let me think on that further.');

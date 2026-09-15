@@ -16,10 +16,12 @@ import {
   processEvidence,
 } from './bayesian/bayesianEngine.js';
 
-const PORT = 3001;
+const PORT = Number(process.env.PORT) || 3001;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const distPath = path.join(__dirname, '..', 'dist');
 
 const promptPath = path.join(__dirname, 'prompts', 'aristotle.md');
 const ARISTOTLE_PROMPT = fs.readFileSync(promptPath, 'utf8');
@@ -919,6 +921,76 @@ res.end(
     return;
   }
 
+
+  // -------------------------
+  // Production frontend
+  // -------------------------
+
+  if (req.method === 'GET') {
+    const requestUrl = new URL(
+      req.url,
+      `http://${req.headers.host || 'localhost'}`
+    );
+
+    const requestedPath =
+      requestUrl.pathname === '/'
+        ? 'index.html'
+        : requestUrl.pathname.slice(1);
+
+    const filePath = path.resolve(
+      distPath,
+      requestedPath
+    );
+
+    const safeDistPath =
+      path.resolve(distPath) + path.sep;
+
+    if (
+      filePath.startsWith(safeDistPath) &&
+      fs.existsSync(filePath) &&
+      fs.statSync(filePath).isFile()
+    ) {
+      const extension = path.extname(filePath);
+
+      const contentTypes = {
+        '.html': 'text/html; charset=utf-8',
+        '.js': 'text/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.svg': 'image/svg+xml',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.ico': 'image/x-icon',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+      };
+
+      res.writeHead(200, {
+        'Content-Type':
+          contentTypes[extension] ||
+          'application/octet-stream',
+      });
+
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+
+    // React Router fallback.
+    const indexPath = path.join(
+      distPath,
+      'index.html'
+    );
+
+    if (fs.existsSync(indexPath)) {
+      res.writeHead(200, {
+        'Content-Type':
+          'text/html; charset=utf-8',
+      });
+
+      fs.createReadStream(indexPath).pipe(res);
+      return;
+    }
+  }
 
   res.writeHead(404, {
     'Content-Type':

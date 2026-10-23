@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '@/api/apiClient';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Send, RotateCcw, ArrowLeft, Volume2, Mic, Square } from 'lucide-react';
+import { Send, RotateCcw, ArrowLeft, Volume2, Mic, Square, Pause, Play, Loader2 } from 'lucide-react';
 import { useLanguage } from '@/lib/LanguageContext';
 import { useT } from '@/lib/i18n';
 import MessageBubble from '@/components/chat/MessageBubble';
@@ -33,6 +33,10 @@ export default function Chat() {
   const [conversationDocId, setConversationDocId] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [speakingIndex, setSpeakingIndex] = useState(null);
+  const [speechPaused, setSpeechPaused] = useState(false);
+  const [speechRate, setSpeechRate] = useState(1.2);
+  const speechTokenRef = useRef(0);
 
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
@@ -124,7 +128,7 @@ export default function Chat() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || isThinking || isOffline) return;
+    if (!text || isThinking || isOffline || isTranscribing) return;
 
     const userMsg = { role: 'user', content: text, timestamp: new Date().toISOString() };
     const newMessages = [...messages, userMsg];
@@ -162,46 +166,64 @@ export default function Chat() {
     }
   };
 
-  const speakText = (text) => {
-      if (!('speechSynthesis' in window)) {
-        alert('Your browser does not support text-to-speech.');
-        return;
+  const stopSpeech = () => {
+    speechTokenRef.current += 1;
+    window.speechSynthesis?.cancel();
+    setSpeakingIndex(null);
+    setSpeechPaused(false);
+  };
+
+  const toggleSpeech = (text, index) => {
+    if (!('speechSynthesis' in window)) {
+      alert('Your browser does not support text-to-speech.');
+      return;
+    }
+    const synth = window.speechSynthesis;
+    if (speakingIndex === index && speechPaused) {
+      synth.resume();
+      setSpeechPaused(false);
+      return;
+    }
+    if (speakingIndex === index && synth.speaking) {
+      synth.pause();
+      setSpeechPaused(true);
+      return;
+    }
+
+    stopSpeech();
+    const token = speechTokenRef.current;
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voices = synth.getVoices();
+    if (lang === 'zh-TW' || lang === 'bilingual') {
+      utterance.lang = 'zh-TW';
+      utterance.voice = voices.find(v => v.name === 'Microsoft HanHan Online - Chinese (Taiwan)') ||
+        voices.find(v => v.lang === 'zh-TW') ||
+        voices.find(v => v.lang === 'zh-HK') ||
+        voices.find(v => v.lang === 'zh-CN') || null;
+    } else {
+      utterance.lang = 'en-US';
+      utterance.voice = voices.find(v => v.name.includes('Aria')) ||
+        voices.find(v => v.lang === 'en-US') || null;
+    }
+    utterance.rate = speechRate;
+    utterance.pitch = 1;
+    const finish = () => {
+      if (speechTokenRef.current === token) {
+        setSpeakingIndex(null);
+        setSpeechPaused(false);
       }
-
-      window.speechSynthesis.cancel();
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
-
-      if (lang === 'zh-TW' || lang === 'bilingual') {
-        utterance.lang = 'zh-TW';
-
-        const chineseVoice =
-          voices.find(v => v.name === 'Microsoft HanHan Online - Chinese (Taiwan)') ||
-          voices.find(v => v.lang === 'zh-TW') ||
-          voices.find(v => v.lang === 'zh-HK') ||
-          voices.find(v => v.lang === 'zh-CN');
-
-        if (chineseVoice) {
-          utterance.voice = chineseVoice;
-        }
-      } else {
-        utterance.lang = 'en-US';
-
-        const englishVoice =
-          voices.find(v => v.name.includes('Aria')) ||
-          voices.find(v => v.lang === 'en-US');
-
-        if (englishVoice) {
-          utterance.voice = englishVoice;
-        }
-      }
-
-      utterance.rate = 1;
-      utterance.pitch = 1;
-
-      window.speechSynthesis.speak(utterance);
     };
+    utterance.onend = finish;
+    utterance.onerror = finish;
+    setSpeakingIndex(index);
+    setSpeechPaused(false);
+    synth.speak(utterance);
+  };
+
+  useEffect(() => () => {
+    speechTokenRef.current += 1;
+    window.speechSynthesis?.cancel();
+  }, []);
 
     const downsampleTo16k = (samples, inputSampleRate) => {
         if (inputSampleRate === 16000) {
@@ -461,6 +483,7 @@ export default function Chat() {
   };
 
   const handleNewConversation = () => {
+    stopSpeech();
     const newSid = generateSessionId();
     sessionStorage.setItem(SESSION_KEY, newSid);
     sessionStorage.removeItem(SESSION_NAME_KEY);
@@ -531,16 +554,39 @@ export default function Chat() {
 
                 {m.role === 'assistant' && (
                   <div className="mt-1 ml-12">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => speakText(m.content)}
-                      className="h-7 px-2 text-muted-foreground"
-                      title="Read aloud"
-                    >
-                      <Volume2 className="w-3.5 h-3.5 mr-1" />
-                      {lang === 'zh-TW' ? '朗讀' : 'Read aloud'}
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => toggleSpeech(m.content, i)}
+                        className="h-7 px-2 text-muted-foreground"
+                        title={speakingIndex === i ? (speechPaused ? 'Resume' : 'Pause') : 'Read aloud'}
+                      >
+                        {speakingIndex === i ? (
+                          speechPaused ? <Play className="w-3.5 h-3.5 mr-1" /> : <Pause className="w-3.5 h-3.5 mr-1" />
+                        ) : <Volume2 className="w-3.5 h-3.5 mr-1" />}
+                        {speakingIndex === i
+                          ? (speechPaused ? (lang === 'zh-TW' ? '繼續' : 'Resume') : (lang === 'zh-TW' ? '暫停' : 'Pause'))
+                          : (lang === 'zh-TW' ? '朗讀' : 'Read aloud')}
+                      </Button>
+                      {speakingIndex === i && (
+                        <Button variant="ghost" size="sm" onClick={stopSpeech} className="h-7 px-2 text-muted-foreground" title="Stop">
+                          <Square className="w-3.5 h-3.5 mr-1" />
+                          {lang === 'zh-TW' ? '停止' : 'Stop'}
+                        </Button>
+                      )}
+                      <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                        {lang === 'zh-TW' ? '語速' : 'Speed'}
+                        <select
+                          aria-label="Speech speed"
+                          value={speechRate}
+                          onChange={e => setSpeechRate(Number(e.target.value))}
+                          className="bg-background border border-border rounded px-1 py-0.5 text-xs"
+                        >
+                          {[0.8, 1, 1.2, 1.5].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+                        </select>
+                      </label>
+                    </div>
                   </div>
                 )}
               </div>
@@ -552,6 +598,17 @@ export default function Chat() {
       {/* Input */}
       <div className="border-t border-border bg-card/50 backdrop-blur">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4">
+          {isTranscribing && (
+            <div role="status" aria-live="polite" className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {lang === 'zh-TW' ? '正在轉寫語音，請稍候…' : 'Transcribing speech, please wait…'}
+            </div>
+          )}
+          {isRecording && (
+            <div role="status" className="mb-2 text-sm text-muted-foreground">
+              {lang === 'zh-TW' ? '錄音中，點擊停止按鈕完成錄音' : 'Recording… Click stop when finished'}
+            </div>
+          )}
           <div className="flex items-end gap-2 bg-background border border-border rounded-2xl p-2 focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15 transition">
             <Textarea
               ref={textareaRef}
@@ -583,7 +640,7 @@ export default function Chat() {
             </Button>
             <Button
               onClick={handleSend}
-              disabled={!input.trim() || isThinking || isOffline}
+              disabled={!input.trim() || isThinking || isOffline || isTranscribing}
               size="icon"
               className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-10 w-10 flex-shrink-0"
             >

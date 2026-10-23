@@ -18,6 +18,7 @@ export function createBayesianSession() {
   const state = createConversationState();
 
   activateNode(state, 'M1.00');
+  state.focusEvidenceTurns = 0;
 
   return state;
 }
@@ -61,14 +62,25 @@ export function processEvidence(
     evidence.evidenceType
   );
 
-  const route =
-    chooseNextNode(conversationState);
+  // A single relevant claim is not sufficient to move to another node.
+  // Keep collecting evidence and allow Aristotle to ask a follow-up.
+  conversationState.focusEvidenceTurns =
+    (conversationState.focusEvidenceTurns || 0) + 1;
+
+  const canConsiderTransition =
+    conversationState.focusEvidenceTurns >= 2 &&
+    ['challenges', 'strong_challenge'].includes(evidence.evidenceType);
+
+  const route = canConsiderTransition
+    ? chooseNextNode(conversationState)
+    : null;
 
   if (route?.target) {
     activateNode(
       conversationState,
       route.target
     );
+    conversationState.focusEvidenceTurns = 0;
   }
 
   const integrationCoverage =
